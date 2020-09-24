@@ -25,6 +25,7 @@ class ViewController: UIViewController {
 
     @IBOutlet weak var backButton: UIBarButtonItem!
     @IBOutlet weak var forwardButton: UIBarButtonItem!
+    @IBOutlet weak var refreshButton: UIBarButtonItem!
     @IBOutlet lazy var webView: WKWebView! = {
 
         if !UIAccessibility.isInvertColorsEnabled {
@@ -65,7 +66,8 @@ class ViewController: UIViewController {
 
     var lightAlpha = CGFloat(0.2)
     var useDarkMode = false
-    let darkBackgroundColor = UIColor(red: 13/255, green: 18/255, blue: 25/255, alpha: 1)
+    let statusBarStyleDarkContentRawValue = 3
+    let darkBackgroundColor = UIColor(red: 26/255, green: 38/255, blue: 52/255, alpha: 1)
 
     let pushNotifications = PushNotifications.shared
     lazy var errorBanner: NotificationBanner = {
@@ -75,7 +77,20 @@ class ViewController: UIViewController {
         return banner
     }()
 
-    var devToURL = "https://dev.to"
+    lazy var mediaManager: MediaManager = {
+        return MediaManager(webView: self.webView, devToURL: self.devToURL)
+    }()
+
+    var devToURL: String = {
+        if let developmentURL = ProcessInfo.processInfo.environment["DEV_URL"] {
+            return developmentURL
+        }
+        return "https://dev.to"
+    }()
+    lazy var devToHost: String? = {
+        var url = URL(string: self.devToURL)
+        return url?.host
+    }()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -88,6 +103,7 @@ class ViewController: UIViewController {
         webView.load(devToURL)
         webView.configuration.allowsInlineMediaPlayback = true
         webView.configuration.userContentController.add(self, name: "haptic")
+        webView.configuration.userContentController.add(self, name: "podcast")
         webView.allowsBackForwardNavigationGestures = true
         webView.addObserver(self, forKeyPath: #keyPath(WKWebView.canGoBack), options: [.new, .old], context: nil)
         webView.addObserver(self, forKeyPath: #keyPath(WKWebView.canGoForward), options: [.new, .old], context: nil)
@@ -152,7 +168,7 @@ class ViewController: UIViewController {
     }
 
     // MARK: - Observers
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey:Any]?,
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?,
                                context: UnsafeMutableRawPointer?) {
         backButton.isEnabled = webView.canGoBack
         forwardButton.isEnabled = webView.canGoForward
@@ -202,7 +218,6 @@ class ViewController: UIViewController {
     func populateUserData() {
         let javascript = "document.getElementsByTagName('body')[0].getAttribute('data-user')"
         webView.evaluateJavaScript(javascript) { result, error in
-
             if let error = error {
                 print("Error getting user data: \(error)")
                 return
@@ -231,6 +246,7 @@ class ViewController: UIViewController {
         safariButton.tintColor = UIColor.white
         backButton.tintColor = UIColor.white
         forwardButton.tintColor = UIColor.white
+        refreshButton.tintColor = UIColor.white
         view.backgroundColor = darkBackgroundColor
         activityIndicator.color = UIColor.white
     }
@@ -238,11 +254,7 @@ class ViewController: UIViewController {
     func modifyShellDesign() {
         let javascript = "document.getElementById('page-content').getAttribute('data-current-page')"
         webView.evaluateJavaScript(javascript) { [weak self] result, error in
-
-            guard let self = self else {
-                return
-            }
-
+            guard let self = self else { return }
             if let error = error {
                 print("Error getting user data: \(error)")
             }
@@ -274,11 +286,7 @@ class ViewController: UIViewController {
         let center = UNUserNotificationCenter.current()
         let options: UNAuthorizationOptions = [.alert, .sound, .badge]
         center.requestAuthorization(options: options) { [weak self] granted, _  in
-
-            guard let self = self else {
-                return
-            }
-
+            guard let self = self else { return }
             guard granted else { return }
             self.getNotificationSettings()
         }
@@ -302,6 +310,9 @@ class ViewController: UIViewController {
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
+        if !useDarkMode && traitCollection.userInterfaceStyle == .dark {
+            return UIStatusBarStyle.init(rawValue: statusBarStyleDarkContentRawValue)!
+        }
         return useDarkMode ? .lightContent : .default
     }
 }
@@ -313,18 +324,13 @@ extension ViewController: WKNavigationDelegate {
             errorBanner.show()
             return
         }
-
         activityIndicator.startAnimating()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let javascript = "document.getElementsByTagName('body')[0].getAttribute('data-user-status')"
         webView.evaluateJavaScript(javascript) { [weak self] result, error in
-
-            guard let self = self else {
-                return
-            }
-
+            guard let self = self else { return }
             if let error = error {
                 print("Error getting user data: \(error)")
             }
@@ -335,7 +341,6 @@ extension ViewController: WKNavigationDelegate {
                 }
             }
         }
-
         activityIndicator.stopAnimating()
     }
 
@@ -360,7 +365,7 @@ extension ViewController: WKNavigationDelegate {
             return .allow
         } else if isAuthLink(url) {
             return .allow
-        } else if url.host != "dev.to" && navigationType.rawValue == 0 {
+        } else if url.host != devToHost && navigationType.rawValue == 0 {
             performSegue(withIdentifier: DoAction.openExternalURL, sender: url)
             return .cancel
         } else {
@@ -369,9 +374,8 @@ extension ViewController: WKNavigationDelegate {
     }
 }
 
+// MARK: - webkit messagehandler protocol
 extension ViewController: WKScriptMessageHandler {
-
-    // MARK: - webkit messagehandler protocol
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "haptic", let hapticType = message.body as? String {
             switch hapticType {
@@ -388,6 +392,9 @@ extension ViewController: WKScriptMessageHandler {
                 let notification = UINotificationFeedbackGenerator()
                 notification.notificationOccurred(.success)
             }
+        }
+        if message.name == "podcast", let message = message.body as? [String: String] {
+            mediaManager.handlePodcastMessage(message)
         }
     }
 }
